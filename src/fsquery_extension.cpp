@@ -7,6 +7,8 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/filter/conjunction_filter.hpp"
+#include "duckdb/planner/filter/in_filter.hpp"
 #include "duckdb/planner/filter/null_filter.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include <duckdb/parser/parsed_data/create_table_function_info.hpp>
@@ -36,34 +38,56 @@ enum FsQueryColumns : idx_t {
 
 struct FsQueryBindData : public TableFunctionData {
 	string path;
+	bool has_explicit_path;
 
-	explicit FsQueryBindData(string path_p) : path(std::move(path_p)) {}
+	explicit FsQueryBindData(string path_p, bool has_explicit_path_p)
+		: path(std::move(path_p)), has_explicit_path(has_explicit_path_p) {}
 };
 
 struct FsQueryGlobalState : public GlobalTableFunctionState {
 	vector<string> paths;
 	idx_t current_idx = 0;
 	vector<column_t> column_ids;
-	string path_prefix; // For "starts with" filter optimization
+	vector<string> path_prefixes; // For "starts with" filter optimization
 
 	FsQueryGlobalState() = default;
 };
 
-static bool PathMatchesPrefix(const string &path, const string &prefix) {
-	if (prefix.empty()) {
+static bool PathMatchesAnyPrefix(const string &path, const vector<string> &prefixes) {
+	if (prefixes.empty()) {
 		return true;
 	}
-	if (path.size() < prefix.size()) {
-		return false;
+	for (const auto &prefix : prefixes) {
+		if (path.size() >= prefix.size() && path.compare(0, prefix.size(), prefix) == 0) {
+			return true;
+		}
 	}
-	return path.compare(0, prefix.size(), prefix) == 0;
+	return false;
 }
 
-static void RecursiveListFiles(FileSystem &fs, const string &path, vector<string> &result, const string &path_prefix) {
-	// Determine if we should add this path to results
-	bool matches_prefix = PathMatchesPrefix(path, path_prefix);
+static bool AnyPrefixCouldBeChild(const string &path, const vector<string> &prefixes) {
+	if (prefixes.empty()) {
+		return true;
+	}
+	string path_with_sep = path;
+	if (!path.empty() && path.back() != '/') {
+		path_with_sep += "/";
+	}
+	for (const auto &prefix : prefixes) {
+		// Check if this prefix starts with the directory path
+		if (prefix.size() >= path_with_sep.size() &&
+		    prefix.compare(0, path_with_sep.size(), path_with_sep) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
 
-	// Add the current path if it matches the prefix
+static void RecursiveListFiles(FileSystem &fs, const string &path, vector<string> &result, const vector<string> &path_prefixes) {
+	// Determine if we should add this path to results
+	bool matches_prefix = PathMatchesAnyPrefix(path, path_prefixes);
+
+	// Add the current path if it matches any prefix
 	if (matches_prefix) {
 		result.push_back(path);
 	}
@@ -84,18 +108,9 @@ static void RecursiveListFiles(FileSystem &fs, const string &path, vector<string
 
 	// Determine if we should recurse into this directory
 	// We recurse if:
-	// 1. The path matches the prefix (already inside the target area), OR
-	// 2. The prefix could be a child of this path (the prefix starts with this path + separator)
-	bool should_recurse = matches_prefix;
-	if (!should_recurse && !path_prefix.empty()) {
-		// Check if the prefix starts with this directory path
-		// e.g., if path is "./src" and prefix is "./src/include", we should recurse
-		string path_with_sep = path;
-		if (!path.empty() && path.back() != '/') {
-			path_with_sep += "/";
-		}
-		should_recurse = PathMatchesPrefix(path_prefix, path_with_sep);
-	}
+	// 1. The path matches any prefix (already inside a target area), OR
+	// 2. Any prefix could be a child of this path (a prefix starts with this path + separator)
+	bool should_recurse = matches_prefix || AnyPrefixCouldBeChild(path, path_prefixes);
 
 	if (!should_recurse) {
 		// Don't recurse into this directory
@@ -108,16 +123,65 @@ static void RecursiveListFiles(FileSystem &fs, const string &path, vector<string
 			// Build full path
 			string full_path = fs.JoinPath(path, fname);
 			// Recursively process
-			RecursiveListFiles(fs, full_path, result, path_prefix);
+			RecursiveListFiles(fs, full_path, result, path_prefixes);
 		});
 	} catch (...) {
 		// Skip directories we can't read
 	}
 }
 
+static void ExtractPrefixFromFilter(const TableFilter &filter, vector<string> &prefixes) {
+	switch (filter.filter_type) {
+	case TableFilterType::CONSTANT_COMPARISON: {
+		auto &constant_filter = filter.Cast<ConstantFilter>();
+		// Look for >= filters which indicate "starts with"
+		if (constant_filter.comparison_type == ExpressionType::COMPARE_GREATERTHANOREQUALTO) {
+			if (constant_filter.constant.type().id() == LogicalTypeId::VARCHAR) {
+				prefixes.push_back(StringValue::Get(constant_filter.constant));
+			}
+		}
+		break;
+	}
+	case TableFilterType::CONJUNCTION_OR: {
+		// OR of multiple filters - extract prefixes from all children
+		auto &or_filter = filter.Cast<ConjunctionOrFilter>();
+		for (auto &child : or_filter.child_filters) {
+			ExtractPrefixFromFilter(*child, prefixes);
+		}
+		break;
+	}
+	case TableFilterType::IN_FILTER: {
+		// IN filter with multiple values
+		auto &in_filter = filter.Cast<InFilter>();
+		for (auto &value : in_filter.values) {
+			if (value.type().id() == LogicalTypeId::VARCHAR) {
+				prefixes.push_back(StringValue::Get(value));
+			}
+		}
+		break;
+	}
+	default:
+		// Other filter types not relevant for prefix extraction
+		break;
+	}
+}
+
 static unique_ptr<FunctionData> FsQueryBind(ClientContext &context, TableFunctionBindInput &input,
                                              vector<LogicalType> &return_types, vector<string> &names) {
-	auto result = make_uniq<FsQueryBindData>(input.inputs[0].ToString());
+	string base_path;
+	bool has_explicit_path = false;
+
+	// Check if a path argument was provided
+	if (input.inputs.size() > 0 && !input.inputs[0].IsNull()) {
+		base_path = input.inputs[0].ToString();
+		has_explicit_path = true;
+	} else {
+		// No path provided - will use filter prefixes or default to current directory
+		base_path = ".";
+		has_explicit_path = false;
+	}
+
+	auto result = make_uniq<FsQueryBindData>(base_path, has_explicit_path);
 
 	// Define the output schema with all stat fields
 	names.emplace_back("path");
@@ -173,29 +237,30 @@ static unique_ptr<GlobalTableFunctionState> FsQueryInit(ClientContext &context, 
 	// Store which columns are requested for projection pushdown
 	result->column_ids = input.column_ids;
 
-	// Extract "starts with" filter on path column (COLUMN_PATH = 0)
+	// Extract "starts with" filters on path column (COLUMN_PATH = 0)
 	if (input.filters) {
 		auto path_filter = input.filters->filters.find(COLUMN_PATH);
 		if (path_filter != input.filters->filters.end()) {
-			auto &filter = *path_filter->second;
-
-			// Check if it's a >= comparison (start of range for "starts with")
-			if (filter.filter_type == TableFilterType::CONSTANT_COMPARISON) {
-				auto &constant_filter = filter.Cast<ConstantFilter>();
-
-				if (constant_filter.comparison_type == ExpressionType::COMPARE_GREATERTHANOREQUALTO) {
-					// This is a >= filter, likely part of a "starts with" pattern
-					if (constant_filter.constant.type().id() == LogicalTypeId::VARCHAR) {
-						result->path_prefix = StringValue::Get(constant_filter.constant);
-					}
-				}
-			}
+			ExtractPrefixFromFilter(*path_filter->second, result->path_prefixes);
 		}
 	}
 
-	// Recursively walk the directory and collect all paths
+	// Determine what paths to scan
+	vector<string> scan_paths;
+
+	if (!bind_data.has_explicit_path && !result->path_prefixes.empty()) {
+		// No explicit path provided, but we have filters - scan each prefix directly
+		scan_paths = result->path_prefixes;
+	} else {
+		// Use the explicit path (or default '.')
+		scan_paths.push_back(bind_data.path);
+	}
+
+	// Recursively walk the directories and collect all paths
 	try {
-		RecursiveListFiles(fs, bind_data.path, result->paths, result->path_prefix);
+		for (const auto &scan_path : scan_paths) {
+			RecursiveListFiles(fs, scan_path, result->paths, result->path_prefixes);
+		}
 	} catch (const std::exception &e) {
 		throw IOException("Failed to iterate directory: %s", e.what());
 	}
@@ -304,13 +369,21 @@ static void FsQueryFunction(ClientContext &context, TableFunctionInput &data_p, 
 }
 
 static void LoadInternal(ExtensionLoader &loader) {
-	// Register the table function
+	// Register the table function with optional path parameter
+	// Using LogicalType::VARCHAR makes it a required parameter by default
+	// We'll handle the optional nature in the bind function by checking for NULL
 	TableFunction fsquery_table("fsquery_scan", {LogicalType::VARCHAR}, FsQueryFunction, FsQueryBind, FsQueryInit);
 	// Enable projection pushdown
 	fsquery_table.projection_pushdown = true;
 	// Enable filter pushdown
 	fsquery_table.filter_pushdown = true;
 	loader.RegisterFunction(fsquery_table);
+
+	// Also register a version with no parameters
+	TableFunction fsquery_table_no_args("fsquery_scan", {}, FsQueryFunction, FsQueryBind, FsQueryInit);
+	fsquery_table_no_args.projection_pushdown = true;
+	fsquery_table_no_args.filter_pushdown = true;
+	loader.RegisterFunction(fsquery_table_no_args);
 }
 
 void FsqueryExtension::Load(ExtensionLoader &loader) {
