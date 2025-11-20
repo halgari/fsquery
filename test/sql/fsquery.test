@@ -1,0 +1,23 @@
+# name: test/sql/fsquery.test
+# description: test fsquery extension
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT fsquery('Sam');
+----
+Catalog Error: Scalar Function with name fsquery does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require fsquery
+
+# Confirm the extension works
+query I
+SELECT fsquery('Sam');
+----
+Fsquery Sam 🐥
+
+query I
+SELECT fsquery_openssl_version('Michael') ILIKE 'Fsquery Michael, my linked OpenSSL version is OpenSSL%';
+----
+true
