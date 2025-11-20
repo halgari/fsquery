@@ -6,6 +6,8 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/filter/null_filter.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include <duckdb/parser/parsed_data/create_table_function_info.hpp>
 
@@ -42,22 +44,61 @@ struct FsQueryGlobalState : public GlobalTableFunctionState {
 	vector<string> paths;
 	idx_t current_idx = 0;
 	vector<column_t> column_ids;
+	string path_prefix; // For "starts with" filter optimization
 
 	FsQueryGlobalState() = default;
 };
 
-static void RecursiveListFiles(FileSystem &fs, const string &path, vector<string> &result) {
-	// Add the current path
-	result.push_back(path);
+static bool PathMatchesPrefix(const string &path, const string &prefix) {
+	if (prefix.empty()) {
+		return true;
+	}
+	if (path.size() < prefix.size()) {
+		return false;
+	}
+	return path.compare(0, prefix.size(), prefix) == 0;
+}
+
+static void RecursiveListFiles(FileSystem &fs, const string &path, vector<string> &result, const string &path_prefix) {
+	// Determine if we should add this path to results
+	bool matches_prefix = PathMatchesPrefix(path, path_prefix);
+
+	// Add the current path if it matches the prefix
+	if (matches_prefix) {
+		result.push_back(path);
+	}
 
 	// Check if it's a directory
+	bool is_directory = false;
 	try {
-		if (!fs.DirectoryExists(path)) {
-			// It's a file, not a directory
-			return;
-		}
+		is_directory = fs.DirectoryExists(path);
 	} catch (...) {
 		// If we can't determine, skip it
+		return;
+	}
+
+	if (!is_directory) {
+		// It's a file, not a directory
+		return;
+	}
+
+	// Determine if we should recurse into this directory
+	// We recurse if:
+	// 1. The path matches the prefix (already inside the target area), OR
+	// 2. The prefix could be a child of this path (the prefix starts with this path + separator)
+	bool should_recurse = matches_prefix;
+	if (!should_recurse && !path_prefix.empty()) {
+		// Check if the prefix starts with this directory path
+		// e.g., if path is "./src" and prefix is "./src/include", we should recurse
+		string path_with_sep = path;
+		if (!path.empty() && path.back() != '/') {
+			path_with_sep += "/";
+		}
+		should_recurse = PathMatchesPrefix(path_prefix, path_with_sep);
+	}
+
+	if (!should_recurse) {
+		// Don't recurse into this directory
 		return;
 	}
 
@@ -67,7 +108,7 @@ static void RecursiveListFiles(FileSystem &fs, const string &path, vector<string
 			// Build full path
 			string full_path = fs.JoinPath(path, fname);
 			// Recursively process
-			RecursiveListFiles(fs, full_path, result);
+			RecursiveListFiles(fs, full_path, result, path_prefix);
 		});
 	} catch (...) {
 		// Skip directories we can't read
@@ -132,9 +173,29 @@ static unique_ptr<GlobalTableFunctionState> FsQueryInit(ClientContext &context, 
 	// Store which columns are requested for projection pushdown
 	result->column_ids = input.column_ids;
 
+	// Extract "starts with" filter on path column (COLUMN_PATH = 0)
+	if (input.filters) {
+		auto path_filter = input.filters->filters.find(COLUMN_PATH);
+		if (path_filter != input.filters->filters.end()) {
+			auto &filter = *path_filter->second;
+
+			// Check if it's a >= comparison (start of range for "starts with")
+			if (filter.filter_type == TableFilterType::CONSTANT_COMPARISON) {
+				auto &constant_filter = filter.Cast<ConstantFilter>();
+
+				if (constant_filter.comparison_type == ExpressionType::COMPARE_GREATERTHANOREQUALTO) {
+					// This is a >= filter, likely part of a "starts with" pattern
+					if (constant_filter.constant.type().id() == LogicalTypeId::VARCHAR) {
+						result->path_prefix = StringValue::Get(constant_filter.constant);
+					}
+				}
+			}
+		}
+	}
+
 	// Recursively walk the directory and collect all paths
 	try {
-		RecursiveListFiles(fs, bind_data.path, result->paths);
+		RecursiveListFiles(fs, bind_data.path, result->paths, result->path_prefix);
 	} catch (const std::exception &e) {
 		throw IOException("Failed to iterate directory: %s", e.what());
 	}
@@ -247,6 +308,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction fsquery_table("fsquery_scan", {LogicalType::VARCHAR}, FsQueryFunction, FsQueryBind, FsQueryInit);
 	// Enable projection pushdown
 	fsquery_table.projection_pushdown = true;
+	// Enable filter pushdown
+	fsquery_table.filter_pushdown = true;
 	loader.RegisterFunction(fsquery_table);
 }
 
