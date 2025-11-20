@@ -16,6 +16,21 @@
 #include <sys/stat.h>
 #include <queue>
 
+// Windows compatibility for stat structure and macros
+#ifdef _WIN32
+#include <sys/types.h>
+// Define S_ISREG and S_ISDIR macros for Windows if not already defined
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#endif
+#ifndef S_ISLNK
+#define S_ISLNK(m) (0)  // Windows doesn't support symbolic links in the same way
+#endif
+#endif
+
 namespace duckdb {
 
 // Column indices for the table function
@@ -277,16 +292,14 @@ static void FsQueryFunction(ClientContext &context, TableFunctionInput &data_p, 
 		const auto &current_path = gstate.paths[gstate.current_idx++];
 
 		// Stat the file
-		struct stat file_stat;
-
 #ifdef _WIN32
-		// Windows uses _stat or _stat64
+		struct _stat64 file_stat;
 		if (_stat64(current_path.c_str(), &file_stat) != 0) {
 			// Skip files we can't stat
 			continue;
 		}
 #else
-		// Unix/Linux/macOS use stat
+		struct stat file_stat;
 		if (stat(current_path.c_str(), &file_stat) != 0) {
 			// Skip files we can't stat
 			continue;
