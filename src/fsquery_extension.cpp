@@ -21,13 +21,13 @@
 #include <sys/types.h>
 // Define S_ISREG and S_ISDIR macros for Windows if not already defined
 #ifndef S_ISREG
-#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#define S_ISREG(m) (((m)&_S_IFMT) == _S_IFREG)
 #endif
 #ifndef S_ISDIR
-#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#define S_ISDIR(m) (((m)&_S_IFMT) == _S_IFDIR)
 #endif
 #ifndef S_ISLNK
-#define S_ISLNK(m) (0)  // Windows doesn't support symbolic links in the same way
+#define S_ISLNK(m) (0) // Windows doesn't support symbolic links in the same way
 #endif
 #endif
 
