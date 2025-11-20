@@ -14,6 +14,24 @@
 
 namespace duckdb {
 
+// Column indices for the table function
+enum FsQueryColumns : idx_t {
+	COLUMN_PATH = 0,
+	COLUMN_MODE = 1,
+	COLUMN_SIZE = 2,
+	COLUMN_UID = 3,
+	COLUMN_GID = 4,
+	COLUMN_ATIME = 5,
+	COLUMN_MTIME = 6,
+	COLUMN_CTIME = 7,
+	COLUMN_NLINK = 8,
+	COLUMN_INO = 9,
+	COLUMN_DEV = 10,
+	COLUMN_IS_REGULAR_FILE = 11,
+	COLUMN_IS_DIRECTORY = 12,
+	COLUMN_IS_SYMLINK = 13
+};
+
 struct FsQueryBindData : public TableFunctionData {
 	string path;
 
@@ -23,6 +41,7 @@ struct FsQueryBindData : public TableFunctionData {
 struct FsQueryGlobalState : public GlobalTableFunctionState {
 	vector<string> paths;
 	idx_t current_idx = 0;
+	vector<column_t> column_ids;
 
 	FsQueryGlobalState() = default;
 };
@@ -110,6 +129,9 @@ static unique_ptr<GlobalTableFunctionState> FsQueryInit(ClientContext &context, 
 	auto result = make_uniq<FsQueryGlobalState>();
 	auto &fs = FileSystem::GetFileSystem(context);
 
+	// Store which columns are requested for projection pushdown
+	result->column_ids = input.column_ids;
+
 	// Recursively walk the directory and collect all paths
 	try {
 		RecursiveListFiles(fs, bind_data.path, result->paths);
@@ -144,65 +166,75 @@ static void FsQueryFunction(ClientContext &context, TableFunctionInput &data_p, 
 		}
 #endif
 
-		// Fill in the output columns
-		idx_t col_idx = 0;
+		// Fill in the output columns - only compute requested columns
+		for (idx_t col_idx = 0; col_idx < gstate.column_ids.size(); col_idx++) {
+			auto column_id = gstate.column_ids[col_idx];
 
-		// path
-		output.data[col_idx++].SetValue(count, Value(current_path));
-
-		// mode
-		output.data[col_idx++].SetValue(count, Value::UBIGINT(file_stat.st_mode));
-
-		// size
-		output.data[col_idx++].SetValue(count, Value::BIGINT(file_stat.st_size));
-
-		// uid
+			switch (column_id) {
+			case COLUMN_PATH:
+				output.data[col_idx].SetValue(count, Value(current_path));
+				break;
+			case COLUMN_MODE:
+				output.data[col_idx].SetValue(count, Value::UBIGINT(file_stat.st_mode));
+				break;
+			case COLUMN_SIZE:
+				output.data[col_idx].SetValue(count, Value::BIGINT(file_stat.st_size));
+				break;
+			case COLUMN_UID:
 #ifdef _WIN32
-		output.data[col_idx++].SetValue(count, Value::UINTEGER(0)); // Windows doesn't have uid
+				output.data[col_idx].SetValue(count, Value::UINTEGER(0));
 #else
-		output.data[col_idx++].SetValue(count, Value::UINTEGER(file_stat.st_uid));
+				output.data[col_idx].SetValue(count, Value::UINTEGER(file_stat.st_uid));
 #endif
-
-		// gid
+				break;
+			case COLUMN_GID:
 #ifdef _WIN32
-		output.data[col_idx++].SetValue(count, Value::UINTEGER(0)); // Windows doesn't have gid
+				output.data[col_idx].SetValue(count, Value::UINTEGER(0));
 #else
-		output.data[col_idx++].SetValue(count, Value::UINTEGER(file_stat.st_gid));
+				output.data[col_idx].SetValue(count, Value::UINTEGER(file_stat.st_gid));
 #endif
-
-		// atime - convert to microseconds since epoch
-		output.data[col_idx++].SetValue(count, Value::TIMESTAMP(Timestamp::FromEpochSeconds(file_stat.st_atime)));
-
-		// mtime
-		output.data[col_idx++].SetValue(count, Value::TIMESTAMP(Timestamp::FromEpochSeconds(file_stat.st_mtime)));
-
-		// ctime
-		output.data[col_idx++].SetValue(count, Value::TIMESTAMP(Timestamp::FromEpochSeconds(file_stat.st_ctime)));
-
-		// nlink
-		output.data[col_idx++].SetValue(count, Value::UBIGINT(file_stat.st_nlink));
-
-		// ino
-		output.data[col_idx++].SetValue(count, Value::UBIGINT(file_stat.st_ino));
-
-		// dev
-		output.data[col_idx++].SetValue(count, Value::UBIGINT(file_stat.st_dev));
-
-		// is_regular_file
-		bool is_regular = S_ISREG(file_stat.st_mode);
-		output.data[col_idx++].SetValue(count, Value::BOOLEAN(is_regular));
-
-		// is_directory
-		bool is_dir = S_ISDIR(file_stat.st_mode);
-		output.data[col_idx++].SetValue(count, Value::BOOLEAN(is_dir));
-
-		// is_symlink
+				break;
+			case COLUMN_ATIME:
+				output.data[col_idx].SetValue(count, Value::TIMESTAMP(Timestamp::FromEpochSeconds(file_stat.st_atime)));
+				break;
+			case COLUMN_MTIME:
+				output.data[col_idx].SetValue(count, Value::TIMESTAMP(Timestamp::FromEpochSeconds(file_stat.st_mtime)));
+				break;
+			case COLUMN_CTIME:
+				output.data[col_idx].SetValue(count, Value::TIMESTAMP(Timestamp::FromEpochSeconds(file_stat.st_ctime)));
+				break;
+			case COLUMN_NLINK:
+				output.data[col_idx].SetValue(count, Value::UBIGINT(file_stat.st_nlink));
+				break;
+			case COLUMN_INO:
+				output.data[col_idx].SetValue(count, Value::UBIGINT(file_stat.st_ino));
+				break;
+			case COLUMN_DEV:
+				output.data[col_idx].SetValue(count, Value::UBIGINT(file_stat.st_dev));
+				break;
+			case COLUMN_IS_REGULAR_FILE: {
+				bool is_regular = S_ISREG(file_stat.st_mode);
+				output.data[col_idx].SetValue(count, Value::BOOLEAN(is_regular));
+				break;
+			}
+			case COLUMN_IS_DIRECTORY: {
+				bool is_dir = S_ISDIR(file_stat.st_mode);
+				output.data[col_idx].SetValue(count, Value::BOOLEAN(is_dir));
+				break;
+			}
+			case COLUMN_IS_SYMLINK: {
 #ifdef _WIN32
-		bool is_symlink = false; // Simplified for Windows
+				bool is_symlink = false;
 #else
-		bool is_symlink = S_ISLNK(file_stat.st_mode);
+				bool is_symlink = S_ISLNK(file_stat.st_mode);
 #endif
-		output.data[col_idx++].SetValue(count, Value::BOOLEAN(is_symlink));
+				output.data[col_idx].SetValue(count, Value::BOOLEAN(is_symlink));
+				break;
+			}
+			default:
+				break;
+			}
+		}
 
 		count++;
 	}
@@ -224,6 +256,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register the table function
 	TableFunction fsquery_table("fsquery_scan", {LogicalType::VARCHAR}, FsQueryFunction, FsQueryBind, FsQueryInit);
+	// Enable projection pushdown
+	fsquery_table.projection_pushdown = true;
 	loader.RegisterFunction(fsquery_table);
 }
 
