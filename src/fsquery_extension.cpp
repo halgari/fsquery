@@ -242,18 +242,7 @@ static void FsQueryFunction(ClientContext &context, TableFunctionInput &data_p, 
 	output.SetCardinality(count);
 }
 
-inline void FsqueryScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &name_vector = args.data[0];
-	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		return StringVector::AddString(result, "Fsquery " + name.GetString() + " 🐥");
-	});
-}
-
 static void LoadInternal(ExtensionLoader &loader) {
-	// Register a scalar function
-	auto fsquery_scalar_function = ScalarFunction("fsquery", {LogicalType::VARCHAR}, LogicalType::VARCHAR, FsqueryScalarFun);
-	loader.RegisterFunction(fsquery_scalar_function);
-
 	// Register the table function
 	TableFunction fsquery_table("fsquery_scan", {LogicalType::VARCHAR}, FsQueryFunction, FsQueryBind, FsQueryInit);
 	// Enable projection pushdown

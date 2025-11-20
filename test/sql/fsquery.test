@@ -2,22 +2,35 @@
 # description: test fsquery extension
 # group: [sql]
 
-# Before we load the extension, this will fail
-statement error
-SELECT fsquery('Sam');
-----
-Catalog Error: Scalar Function with name fsquery does not exist!
-
 # Require statement will ensure this test is run with this extension loaded
 require fsquery
 
-# Confirm the extension works
+# Test basic functionality - scan a simple directory
 query I
-SELECT fsquery('Sam');
+SELECT COUNT(*) > 0 FROM fsquery_scan('.');
 ----
-Fsquery Sam 🐥
+true
 
+# Test that we can get file paths
 query I
-SELECT fsquery_openssl_version('Michael') ILIKE 'Fsquery Michael, my linked OpenSSL version is OpenSSL%';
+SELECT COUNT(*) > 0 FROM fsquery_scan('.') WHERE path LIKE '%.test';
+----
+true
+
+# Test projection pushdown - select only specific columns
+query I
+SELECT COUNT(*) > 0 FROM (SELECT path FROM fsquery_scan('.'));
+----
+true
+
+# Test file type detection
+query I
+SELECT COUNT(*) > 0 FROM fsquery_scan('.') WHERE is_regular_file = true;
+----
+true
+
+# Test directory detection
+query I
+SELECT COUNT(*) > 0 FROM fsquery_scan('.') WHERE is_directory = true;
 ----
 true
