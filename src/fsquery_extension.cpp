@@ -41,7 +41,8 @@ struct FsQueryBindData : public TableFunctionData {
 	bool has_explicit_path;
 
 	explicit FsQueryBindData(string path_p, bool has_explicit_path_p)
-		: path(std::move(path_p)), has_explicit_path(has_explicit_path_p) {}
+	    : path(std::move(path_p)), has_explicit_path(has_explicit_path_p) {
+	}
 };
 
 struct FsQueryGlobalState : public GlobalTableFunctionState {
@@ -75,15 +76,15 @@ static bool AnyPrefixCouldBeChild(const string &path, const vector<string> &pref
 	}
 	for (const auto &prefix : prefixes) {
 		// Check if this prefix starts with the directory path
-		if (prefix.size() >= path_with_sep.size() &&
-		    prefix.compare(0, path_with_sep.size(), path_with_sep) == 0) {
+		if (prefix.size() >= path_with_sep.size() && prefix.compare(0, path_with_sep.size(), path_with_sep) == 0) {
 			return true;
 		}
 	}
 	return false;
 }
 
-static void RecursiveListFiles(FileSystem &fs, const string &path, vector<string> &result, const vector<string> &path_prefixes) {
+static void RecursiveListFiles(FileSystem &fs, const string &path, vector<string> &result,
+                               const vector<string> &path_prefixes) {
 	// Determine if we should add this path to results
 	bool matches_prefix = PathMatchesAnyPrefix(path, path_prefixes);
 
@@ -167,7 +168,7 @@ static void ExtractPrefixFromFilter(const TableFilter &filter, vector<string> &p
 }
 
 static unique_ptr<FunctionData> FsQueryBind(ClientContext &context, TableFunctionBindInput &input,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                            vector<LogicalType> &return_types, vector<string> &names) {
 	string base_path;
 	bool has_explicit_path = false;
 
