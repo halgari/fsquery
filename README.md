@@ -1,102 +1,82 @@
-# Fsquery
+# fsquery
 
-This repository is based on https://github.com/duckdb/extension-template, check it out if you want to build and ship your own DuckDB extension.
+A [DuckDB](https://duckdb.org/) extension that lets you query filesystem metadata using SQL. `fsquery_scan()` recursively traverses directories and returns file metadata as a table, with filter and projection pushdown for efficient scanning.
 
----
+## Installation
 
-This extension, Fsquery, allow you to ... <extension_goal>.
-
-
-## Building
-### Managing dependencies
-DuckDB extensions uses VCPKG for dependency management. Enabling VCPKG is very simple: follow the [installation instructions](https://vcpkg.io/en/getting-started) or just run the following:
-```shell
-git clone https://github.com/Microsoft/vcpkg.git
-./vcpkg/bootstrap-vcpkg.sh
-export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
-```
-Note: VCPKG is only required for extensions that want to rely on it for dependency management. If you want to develop an extension without dependencies, or want to do your own dependency management, just skip this step. Note that the example extension uses VCPKG to build with a dependency for instructive purposes, so when skipping this step the build may not work without removing the dependency.
-
-### Build steps
-Now to build the extension, run:
-```sh
-make
-```
-The main binaries that will be built are:
-```sh
-./build/release/duckdb
-./build/release/test/unittest
-./build/release/extension/fsquery/fsquery.duckdb_extension
-```
-- `duckdb` is the binary for the duckdb shell with the extension code automatically loaded.
-- `unittest` is the test runner of duckdb. Again, the extension is already linked into the binary.
-- `fsquery.duckdb_extension` is the loadable binary as it would be distributed.
-
-## Running the extension
-To run the extension code, simply start the shell with `./build/release/duckdb`.
-
-Now we can use the features from the extension directly in DuckDB. The template contains a single scalar function `fsquery()` that takes a string arguments and returns a string:
-```
-D select fsquery('Jane') as result;
-┌───────────────┐
-│    result     │
-│    varchar    │
-├───────────────┤
-│ Fsquery Jane 🐥 │
-└───────────────┘
-```
-
-## Running the tests
-Different tests can be created for DuckDB extensions. The primary way of testing DuckDB extensions should be the SQL tests in `./test/sql`. These SQL tests can be run using:
-```sh
-make test
-```
-
-### Installing the deployed binaries
-To install your extension binaries from S3, you will need to do two things. Firstly, DuckDB should be launched with the
-`allow_unsigned_extensions` option set to true. How to set this will depend on the client you're using. Some examples:
-
-CLI:
-```shell
-duckdb -unsigned
-```
-
-Python:
-```python
-con = duckdb.connect(':memory:', config={'allow_unsigned_extensions' : 'true'})
-```
-
-NodeJS:
-```js
-db = new duckdb.Database(':memory:', {"allow_unsigned_extensions": "true"});
-```
-
-Secondly, you will need to set the repository endpoint in DuckDB to the HTTP url of your bucket + version of the extension
-you want to install. To do this run the following SQL query in DuckDB:
 ```sql
-SET custom_extension_repository='bucket.s3.eu-west-1.amazonaws.com/<your_extension_name>/latest';
-```
-Note that the `/latest` path will allow you to install the latest extension version available for your current version of
-DuckDB. To specify a specific version, you can pass the version instead.
-
-After running these steps, you can install and load your extension using the regular INSTALL/LOAD commands in DuckDB:
-```sql
-INSTALL fsquery;
+INSTALL fsquery FROM community;
 LOAD fsquery;
 ```
 
-## Setting up CLion
+## Usage
 
-### Opening project
-Configuring CLion with this extension requires a little work. Firstly, make sure that the DuckDB submodule is available.
-Then make sure to open `./duckdb/CMakeLists.txt` (so not the top level `CMakeLists.txt` file from this repo) as a project in CLion.
-Now to fix your project path go to `tools->CMake->Change Project Root`([docs](https://www.jetbrains.com/help/clion/change-project-root-directory.html)) to set the project root to the root dir of this repo.
+### Scan a directory and find large files
 
-### Debugging
-To set up debugging in CLion, there are two simple steps required. Firstly, in `CLion -> Settings / Preferences -> Build, Execution, Deploy -> CMake` you will need to add the desired builds (e.g. Debug, Release, RelDebug, etc). There's different ways to configure this, but the easiest is to leave all empty, except the `build path`, which needs to be set to `../build/{build type}`, and CMake Options to which the following flag should be added, with the path to the extension CMakeList:
-
-```
--DDUCKDB_EXTENSION_CONFIGS=<path_to_the_exentension_CMakeLists.txt>
+```sql
+SELECT path, size, mtime
+FROM fsquery_scan('/home')
+WHERE is_regular_file AND size > 1000000
+ORDER BY size DESC
+LIMIT 10;
 ```
 
-The second step is to configure the unittest runner as a run/debug configuration. To do this, go to `Run -> Edit Configurations` and click `+ -> Cmake Application`. The target and executable should be `unittest`. This will run all the DuckDB tests. To specify only running the extension specific tests, add `--test-dir ../../.. [sql]` to the `Program Arguments`. Note that it is recommended to use the `unittest` executable for testing/development within CLion. The actual DuckDB CLI currently does not reliably work as a run target in CLion.
+### Filter pushdown — only `/etc` and `/var/log` are traversed, not the entire filesystem
+
+```sql
+SELECT path, size FROM fsquery_scan()
+WHERE path >= '/etc' OR path >= '/var/log';
+```
+
+### Find recently modified files
+
+```sql
+SELECT path, mtime FROM fsquery_scan('/home')
+WHERE is_regular_file AND mtime > TIMESTAMP '2025-01-01'
+ORDER BY mtime DESC;
+```
+
+### Find all symlinks
+
+```sql
+SELECT path FROM fsquery_scan('/usr') WHERE is_symlink;
+```
+
+## Columns
+
+`fsquery_scan()` returns the following columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `path` | `VARCHAR` | Full file path |
+| `mode` | `INTEGER` | File mode/permissions |
+| `size` | `BIGINT` | File size in bytes |
+| `uid` | `INTEGER` | Owner user ID |
+| `gid` | `INTEGER` | Owner group ID |
+| `atime` | `TIMESTAMP` | Last access time |
+| `mtime` | `TIMESTAMP` | Last modification time |
+| `ctime` | `TIMESTAMP` | Last status change time |
+| `nlink` | `INTEGER` | Number of hard links |
+| `ino` | `BIGINT` | Inode number |
+| `dev` | `BIGINT` | Device ID |
+| `is_regular_file` | `BOOLEAN` | True if regular file |
+| `is_directory` | `BOOLEAN` | True if directory |
+| `is_symlink` | `BOOLEAN` | True if symbolic link |
+
+## Features
+
+- **Filter pushdown**: Path prefix filters are pushed down to avoid scanning irrelevant directories. When using `fsquery_scan()` (no explicit path), filters like `path >= '/home/user/docs'` cause only those subtrees to be traversed.
+- **Projection pushdown**: Only requested columns are computed, skipping unnecessary `stat` field extraction.
+- **Cross-platform**: Linux, macOS, and Windows.
+
+## Building from source
+
+```sh
+make
+```
+
+## Running tests
+
+```sh
+make test
+```
