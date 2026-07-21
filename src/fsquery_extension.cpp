@@ -40,19 +40,21 @@
 #ifdef _WIN32
 
 static std::wstring UTF8ToWide(const std::string &str) {
-	if (str.empty()) {
-		return std::wstring();
-	}
+    if (str.empty()) {
+        return std::wstring();
+    }
 
-	int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), nullptr, 0);
-	if (size_needed <= 0) {
-		return std::wstring();
-	}
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), nullptr, 0);
 
-	std::wstring result(size_needed, L'\0');
-	MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &result[0], size_needed);
+    if (size_needed <= 0) {
+        return std::wstring();
+    }
 
-	return result;
+    std::wstring result(size_needed, L'\0');
+
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &result[0], size_needed);
+
+    return result;
 }
 
 #endif
