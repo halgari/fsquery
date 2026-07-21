@@ -21,7 +21,6 @@
 #include <windows.h>
 #endif
 
-
 // Windows compatibility for stat structure and macros
 #ifdef _WIN32
 #include <sys/types.h>
@@ -40,25 +39,24 @@
 #ifdef _WIN32
 
 static std::wstring UTF8ToWide(const std::string &str) {
-    if (str.empty()) {
-        return std::wstring();
-    }
+	if (str.empty()) {
+		return std::wstring();
+	}
 
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), nullptr, 0);
+	int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), nullptr, 0);
 
-    if (size_needed <= 0) {
-        return std::wstring();
-    }
+	if (size_needed <= 0) {
+		return std::wstring();
+	}
 
-    std::wstring result(size_needed, L'\0');
+	std::wstring result(size_needed, L'\0');
 
-    MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &result[0], size_needed);
+	MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &result[0], size_needed);
 
-    return result;
+	return result;
 }
 
 #endif
-
 
 namespace duckdb {
 
