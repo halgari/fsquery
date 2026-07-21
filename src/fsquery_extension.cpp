@@ -16,6 +16,11 @@
 #include <sys/stat.h>
 #include <queue>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+
 // Windows compatibility for stat structure and macros
 #ifdef _WIN32
 #include <sys/types.h>
@@ -30,6 +35,42 @@
 #define S_ISLNK(m) (0) // Windows doesn't support symbolic links in the same way
 #endif
 #endif
+
+#ifdef _WIN32
+
+static std::wstring UTF8ToWide(const std::string &str)
+{
+	if (str.empty()) {
+		return std::wstring();
+	}
+
+	int size_needed = MultiByteToWideChar(
+	    CP_UTF8,
+	    0,
+	    str.data(),
+	    (int)str.size(),
+	    nullptr,
+	    0);
+
+	if (size_needed <= 0) {
+		return std::wstring();
+	}
+
+	std::wstring result(size_needed, L'\0');
+
+	MultiByteToWideChar(
+	    CP_UTF8,
+	    0,
+	    str.data(),
+	    (int)str.size(),
+	    result.data(),
+	    size_needed);
+
+	return result;
+}
+
+#endif
+
 
 namespace duckdb {
 
@@ -293,11 +334,16 @@ static void FsQueryFunction(ClientContext &context, TableFunctionInput &data_p, 
 
 		// Stat the file
 #ifdef _WIN32
+
 		struct _stat64 file_stat;
-		if (_stat64(current_path.c_str(), &file_stat) != 0) {
+
+		auto wide_path = UTF8ToWide(current_path);
+
+		if (_wstat64(wide_path.c_str(), &file_stat) != 0) {
 			// Skip files we can't stat
 			continue;
 		}
+
 #else
 		struct stat file_stat;
 		if (stat(current_path.c_str(), &file_stat) != 0) {
