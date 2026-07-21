@@ -64,7 +64,7 @@ static std::wstring UTF8ToWide(const std::string &str)
 	    0,
 	    str.data(),
 	    (int)str.size(),
-	    result.data(),
+	    &result[0],
 	    size_needed);
 
 	return result;
