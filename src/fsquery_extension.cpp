@@ -15,6 +15,7 @@
 
 #include <sys/stat.h>
 #include <queue>
+#include <string>
 
 #ifdef _WIN32
 #include <windows.h>
