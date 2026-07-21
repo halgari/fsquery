@@ -4,27 +4,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-windows:
-    name: Build Windows Extension
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      - name: Setup DuckDB extension build environment
-        uses: duckdb/extension-ci-tools/.github/actions/setup@v1
-        with:
-          duckdb_version: v1.5.0
-
-      - name: Build extension
-        shell: bash
-        run: |
-          make debug
-
-      - name: Upload extension artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fsquery-windows-extension
-          path: |
-            **/fsquery.duckdb_extension
+  build:
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.0
+    with:
+      duckdb_version: v1.5.0
+      ci_tools_version: v1.5.0
+      extension_name: fsquery
