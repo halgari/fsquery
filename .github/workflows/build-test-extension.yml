@@ -3,10 +3,15 @@ name: Build Test Extension
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build fsquery extension
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.0
     with:
       duckdb_version: v1.5.0
       ci_tools_version: v1.5.0
       extension_name: fsquery
+      enable_testing: true
