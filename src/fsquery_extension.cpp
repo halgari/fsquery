@@ -337,7 +337,7 @@ static void FsQueryFunction(ClientContext &context, TableFunctionInput &data_p, 
 #ifdef _WIN32
 
 		struct _stat64 file_stat;
-
+		// Use UTF-16 Windows API to support Unicode paths
 		auto wide_path = UTF8ToWide(current_path);
 
 		if (_wstat64(wide_path.c_str(), &file_stat) != 0) {
