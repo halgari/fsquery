@@ -53,7 +53,7 @@ jobs:
 
       - name: Build release extension
         run: |
-          make release
+          make release OVERRIDE_GIT_DESCRIBE=v1.5.4
 
       - name: Locate extension
         shell: pwsh
