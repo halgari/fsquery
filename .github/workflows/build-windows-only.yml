@@ -75,9 +75,21 @@ jobs:
           New-Item -ItemType Directory -Force artifact | Out-Null
           Copy-Item $file.FullName artifact/fsquery.duckdb_extension
 
+          $duckdbExe = Get-ChildItem `
+            -Path build/release `
+            -Filter duckdb.exe |
+            Select-Object -First 1
+
+          if (-not $duckdbExe) {
+            Write-Error "duckdb.exe was not generated"
+            exit 1
+          }
+
+          Copy-Item $duckdbExe.FullName artifact/duckdb.exe
+
       - name: Upload Windows extension
         uses: actions/upload-artifact@v4
         with:
-          name: fsquery-windows-amd64-duckdb-v1.5.0
-          path: artifact/fsquery.duckdb_extension
+          name: fsquery-windows-amd64-duckdb-v1.5.4
+          path: artifact/
           if-no-files-found: error
