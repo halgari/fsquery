@@ -27,6 +27,15 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
+      - name: Checkout exact DuckDB v1.5.4 source
+        run: |
+          git -C duckdb fetch --force --tags origin
+          git -C duckdb checkout --force v1.5.4
+          echo "DuckDB source commit:"
+          git -C duckdb log -1 --oneline
+          echo "DuckDB exact tag:"
+          git -C duckdb describe --tags --exact-match
+
       - name: Use fixed extension-ci-tools
         run: |
           git -C extension-ci-tools fetch \
@@ -53,7 +62,7 @@ jobs:
 
       - name: Build release extension
         run: |
-          make release OVERRIDE_GIT_DESCRIBE=v1.5.4
+          make release
 
       - name: Locate extension
         shell: pwsh
