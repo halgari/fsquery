@@ -1,0 +1,104 @@
+name: Build Windows Extension Only
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windows x64 extension
+    runs-on: windows-2022
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      GEN: ninja
+      DUCKDB_PLATFORM: windows_amd64
+      EXTENSION_NAME: fsquery
+
+    steps:
+      - name: Checkout fsquery
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Checkout exact DuckDB v1.5.4 source
+        run: |
+          git -C duckdb fetch --force --tags origin
+          git -C duckdb checkout --force v1.5.4
+          echo "DuckDB source commit:"
+          git -C duckdb log -1 --oneline
+          echo "DuckDB exact tag:"
+          git -C duckdb describe --tags --exact-match
+
+      - name: Use fixed extension-ci-tools
+        run: |
+          git -C extension-ci-tools fetch \
+            https://github.com/acareatgua/extension-ci-tools.git \
+            fix-windows-test-path
+          git -C extension-ci-tools checkout FETCH_HEAD
+
+          echo "extension-ci-tools commit:"
+          git -C extension-ci-tools log -1 --oneline
+
+          echo "Windows test path configuration:"
+          grep -E "^(TEST_PATH|TESTS_BASE_DIRECTORY)" \
+            extension-ci-tools/makefiles/duckdb_extension.Makefile
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        shell: pwsh
+        run: |
+          choco install ninja --yes --no-progress
+
+      - name: Build release extension
+        run: |
+          make release
+
+      - name: Locate extension
+        shell: pwsh
+        run: |
+          $file = Get-ChildItem `
+            -Path build/release `
+            -Recurse `
+            -Filter fsquery.duckdb_extension |
+            Select-Object -First 1
+
+          if (-not $file) {
+            Write-Error "fsquery.duckdb_extension was not generated"
+            exit 1
+          }
+
+          Write-Host "Extension generated at:"
+          Write-Host $file.FullName
+
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          Copy-Item $file.FullName artifact/fsquery.duckdb_extension
+
+          $duckdbExe = Get-ChildItem `
+            -Path build/release `
+            -Filter duckdb.exe |
+            Select-Object -First 1
+
+          if (-not $duckdbExe) {
+            Write-Error "duckdb.exe was not generated"
+            exit 1
+          }
+
+          Copy-Item $duckdbExe.FullName artifact/duckdb.exe
+
+      - name: Upload Windows extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: fsquery-windows-amd64-duckdb-v1.5.4
+          path: artifact/
+          if-no-files-found: error
